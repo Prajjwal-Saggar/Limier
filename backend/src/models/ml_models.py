@@ -96,9 +96,9 @@ class XGBoostScorer:
         # predict_proba returns [P(class 0), P(class 1)]
         return pd.Series(self.model.predict_proba(X)[:, 1], index=X.index)
 
-    def get_top_features(self, X: pd.DataFrame, top_k: int = 3) -> list[list[str]]:
+    def get_top_features(self, X: pd.DataFrame, top_k: int = 5) -> list[list[dict]]:
         """
-        Returns the top_k feature names driving the anomaly score for each row in X.
+        Returns the top_k feature details driving the anomaly score for each row in X.
         Useful for generating human-readable explanations via the agent.
         """
         if self.explainer is None:
@@ -114,8 +114,16 @@ class XGBoostScorer:
         top_features_per_row = []
         for i in range(len(X)):
             # Sort features by absolute SHAP value (impact magnitude)
-            row_shap = np.abs(shap_values[i])
-            top_indices = np.argsort(row_shap)[-top_k:][::-1]
-            top_features_per_row.append([self.feature_cols[idx] for idx in top_indices])
+            row_shap = shap_values[i]
+            row_abs_shap = np.abs(row_shap)
+            top_indices = np.argsort(row_abs_shap)[-top_k:][::-1]
+            row_features = []
+            for idx in top_indices:
+                row_features.append({
+                    "feature": self.feature_cols[idx],
+                    "value": float(X.iloc[i, idx]),
+                    "shap_contribution": float(row_shap[idx])
+                })
+            top_features_per_row.append(row_features)
             
         return top_features_per_row
