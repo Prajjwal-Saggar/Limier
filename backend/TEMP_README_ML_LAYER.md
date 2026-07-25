@@ -35,19 +35,31 @@ This file serves as a temporary guide documenting the core machine learning, rul
 - **Target Leakage Prevention**: All features are computed strictly "point-in-time" prior to or exactly at the current transaction timestamp. It does not look into the future, ensuring ML models can be trained safely.
 - **Robustness**: Includes edge-case handling for customers with missing history (filling NaNs with zeroes) and avoids division-by-zero errors when calculating ratios (like spike ratios and burstiness). Similar to the rules engine, thresholds and window sizes are centralized in `FEATURE_CONFIG`.
 
+## 4. Machine Learning & Explainable AI
+**File**: [`backend/src/models/ml_models.py`](file:///c:/6th%20sem/Full%20Stack/PROJECT/Limier/backend/src/models/ml_models.py)
+
+**Purpose**: Provides advanced predictive capabilities to catch zero-day anomalies and learn from historical ground truth.
+**How it was created**:
+- **Isolation Forest (Unsupervised)**: Detects generalized weirdness (zero-day typologies) by isolating anomalous points in the dense feature space. 
+- **XGBoost (Supervised)**: Trains dynamically on the labeled synthetic data to catch exact mathematical correlations for structuring, cash-outs, and round-trips.
+- **SHAP (Explainable AI)**: Injects `shap.TreeExplainer` into the XGBoost pipeline to extract the top feature importances driving a specific anomaly score. This ensures the ML layer is never a "black box" and can be explained natively by the AI Agent.
+
+## 5. Hybrid Scorer (Orchestration)
+**File**: [`backend/src/models/hybrid_scorer.py`](file:///c:/6th%20sem/Full%20Stack/PROJECT/Limier/backend/src/models/hybrid_scorer.py)
+
+**Purpose**: The central brain that unifies heuristic rules, unsupervised ML, and supervised ML into a single risk output.
+**How it was created**:
+- **50/50 ML Split**: Combines the Isolation Forest score (50% weight) and XGBoost score (50% weight) into a base anomaly risk rating (0-100).
+- **Rule Override**: If a deterministic heuristic rule fires (e.g. strict Structuring limits breached), the customer is instantly elevated to "High Risk", completely overriding any nuanced ML uncertainty.
+- **Noise Filtering**: It explicitly pre-filters the dataset for "material" transactions (e.g., >$8000) before evaluating rules, preventing 180-day micro-transaction noise from triggering false positives.
+
+## 6. FastAPI Server & Agent Tools
+**File**: [`backend/src/api/main.py`](file:///c:/6th%20sem/Full%20Stack/PROJECT/Limier/backend/src/api/main.py)
+
+**Purpose**: Exposes the entire pipeline for real-time inference by the LLM Agent or Frontend UI.
+**How it was created**:
+- Wraps `anomaly_detection_tool.py` and `risk_classification_tool.py` behind a fast, asynchronous `/score` POST endpoint.
+- Ingests raw JSON transactions, builds features, orchestrates the ML/rules, and returns a clean risk payload containing the final score, risk tier, triggered heuristic rules, and top SHAP features for the Agent to explain.
+
 ---
 *Note: This is a temporary README created to track the architectural decisions made during the hackathon. It can be merged into the main backend README once the project solidifies.*
-
-Option 1: System Integration & Docker Setup (Recommended)
-Earlier, we noted that running docker compose up fails because we still need to create a real .env file and make sure the backend successfully starts up. If you have an API layer (like FastAPI) that needs to serve this ML logic to a frontend, we should wire that up and verify the container runs properly.
-
-Option 2: Build the AI Agent
-We just built the anomaly_detection_tool and risk_classification_tool, which are designed for an LLM agent. If you are building a LangChain, CrewAI, or LlamaIndex agent that will act as the "AML Investigator," we can start building the agent's core prompt and logic so it can call these tools and explain the findings to the judges.
-
-Option 3: Visual Sanity Checks (EDA)
-The build plan mentioned notebooks/eda_exploration.ipynb. If you need to generate some nice charts and graphs (like risk distributions, anomaly scatter plots, or log-normal amount histograms) for your pitch deck or for a judge demo, we can build out that Jupyter notebook now.
-
-Option 4: Stretch Goals (XGBoost & Feature Category D)
-If you have a lot of time left in your budget, the build plan mentions we can move on to the "Buffer" phase: adding Feature Category D (e.g., more complex graph/network features) and training an XGBoost supervised model to work alongside the Isolation Forest.
-
-Which of these would you like to tackle next to get your hackathon project over the finish line?

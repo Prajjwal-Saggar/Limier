@@ -8,8 +8,8 @@ import pandas as pd
 HYBRID_CONFIG = {
     "high_threshold": 70.0,
     "medium_threshold": 40.0,
-    "ml_weight": 1.0,
-    "xgb_weight": 0.0  # Placeholder for future use
+    "ml_weight": 0.5,
+    "xgb_weight": 0.5
 }
 
 def hybrid_score(
@@ -74,20 +74,39 @@ def score_all_customers(
     """
     Batch scores all customers.
     """
-    # For a customer, if ANY transaction is highly anomalous, their overall risk profile escalates.
-    # So we take the maximum iso_forest_score among their transactions as their base ML risk.
+    customer_ml_scores = pd.Series()
+    customer_xgb_scores = pd.Series()
+    customer_shap_features = {}
+    
     if "iso_forest_score" in features_df.columns:
         customer_ml_scores = features_df.groupby("customer_id")["iso_forest_score"].max()
-    else:
-        customer_ml_scores = pd.Series()
+        
+    if "xgb_score" in features_df.columns:
+        customer_xgb_scores = features_df.groupby("customer_id")["xgb_score"].max()
+        
+        # Get SHAP features for the most anomalous transaction per customer
+        if "shap_features" in features_df.columns:
+            # Find index of max xgb score per customer
+            idx_max_xgb = features_df.groupby("customer_id")["xgb_score"].idxmax()
+            for cid, idx in idx_max_xgb.items():
+                if pd.notna(idx):
+                    customer_shap_features[cid] = features_df.loc[idx, "shap_features"]
     
     rows = []
     for cid in transactions_df["customer_id"].unique():
         rule_res = rule_results_by_customer.get(cid, [])
         iso_score = float(customer_ml_scores.get(cid, 0.0))
+        xgb_score = float(customer_xgb_scores.get(cid, 0.0)) if cid in customer_xgb_scores else None
         
-        result = hybrid_score(rule_res, iso_score)
+        result = hybrid_score(rule_res, iso_score, xgb_score)
         
+        # Append SHAP features if available
+        if cid in customer_shap_features and isinstance(customer_shap_features[cid], list):
+            result["top_features"].extend(customer_shap_features[cid])
+            # Deduplicate features while preserving order
+            seen = set()
+            result["top_features"] = [f for f in result["top_features"] if not (f in seen or seen.add(f))]
+            
         row = {"customer_id": cid}
         row.update(result)
         rows.append(row)
@@ -105,7 +124,7 @@ if __name__ == "__main__":
     from src.data.generate_synthetic import generate_synthetic_data
     from src.features.feature_builder import build_features
     from src.models.rules_engine import evaluate_all
-    from src.models.ml_models import prepare_feature_matrix, IsolationForestScorer
+    from src.models.ml_models import prepare_feature_matrix, IsolationForestScorer, XGBoostScorer
     
     print("1. Generating synthetic data...")
     txns, custs = generate_synthetic_data(n_customers=500, days_of_history=180, seed=42)
@@ -121,11 +140,20 @@ if __name__ == "__main__":
     significant_txns = txns[txns["amount"] >= 8000].copy()
     rule_results = evaluate_all(significant_txns)
     
-    print("4. Training Isolation Forest...")
+    print("4. Training Isolation Forest & XGBoost...")
     X, feature_cols = prepare_feature_matrix(features_df)
-    scorer = IsolationForestScorer()
-    scorer.fit(X)
-    features_df["iso_forest_score"] = scorer.score(X)
+    
+    # Train IF (Unsupervised)
+    iso_scorer = IsolationForestScorer()
+    iso_scorer.fit(X)
+    features_df["iso_forest_score"] = iso_scorer.score(X)
+    
+    # Train XGBoost (Supervised) on the planted labels
+    xgb_scorer = XGBoostScorer()
+    y = features_df["is_planted_suspicious"] if "is_planted_suspicious" in features_df else pd.Series(0, index=X.index)
+    xgb_scorer.fit(X, y)
+    features_df["xgb_score"] = xgb_scorer.score(X)
+    features_df["shap_features"] = xgb_scorer.get_top_features(X)
     
     print("\n---------------- VALIDATION CHECKS ----------------")
     
@@ -133,7 +161,7 @@ if __name__ == "__main__":
     # Assuming threshold >= 0.70 correlates to "high" or anomalous
     # (HYBRID_CONFIG high threshold is 70)
     anomalous_pct = (features_df["iso_forest_score"] >= 0.70).mean()
-    print(f"\na. ML Anomaly Rate (score >= 0.70): {anomalous_pct:.2%}")
+    print(f"\na. ML Anomaly Rate (IF score >= 0.70): {anomalous_pct:.2%}")
     if anomalous_pct > 0.15:
         print("FAIL: ML anomaly rate is > 15%")
     else:

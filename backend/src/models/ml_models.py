@@ -67,3 +67,55 @@ class IsolationForestScorer:
         normalized = self.scaler.fit_transform(raw_scores.reshape(-1, 1)).flatten()
         
         return pd.Series(normalized, index=X.index)
+
+class XGBoostScorer:
+    def __init__(self, config: dict = ML_CONFIG):
+        import xgboost as xgb
+        self.model = xgb.XGBClassifier(
+            n_estimators=config["n_estimators"],
+            learning_rate=0.1,
+            max_depth=4,
+            random_state=config["random_state"],
+            n_jobs=-1,
+            eval_metric="logloss"
+        )
+        self.explainer = None
+        self.feature_cols = None
+
+    def fit(self, X: pd.DataFrame, y: pd.Series) -> None:
+        """Trains the XGBoost model on ground truth labels."""
+        self.model.fit(X, y)
+        self.feature_cols = X.columns.tolist()
+        
+        # Initialize SHAP explainer for explainability
+        import shap
+        self.explainer = shap.TreeExplainer(self.model)
+
+    def score(self, X: pd.DataFrame) -> pd.Series:
+        """Returns the probability (0-1) of the transaction being anomalous."""
+        # predict_proba returns [P(class 0), P(class 1)]
+        return pd.Series(self.model.predict_proba(X)[:, 1], index=X.index)
+
+    def get_top_features(self, X: pd.DataFrame, top_k: int = 3) -> list[list[str]]:
+        """
+        Returns the top_k feature names driving the anomaly score for each row in X.
+        Useful for generating human-readable explanations via the agent.
+        """
+        if self.explainer is None:
+            return [[] for _ in range(len(X))]
+            
+        shap_values = self.explainer.shap_values(X)
+        
+        # XGBClassifier shap_values might be 2D or a list depending on objective.
+        # For binary classification it's usually a 2D array of shape (n_samples, n_features).
+        if isinstance(shap_values, list):
+            shap_values = shap_values[1]
+            
+        top_features_per_row = []
+        for i in range(len(X)):
+            # Sort features by absolute SHAP value (impact magnitude)
+            row_shap = np.abs(shap_values[i])
+            top_indices = np.argsort(row_shap)[-top_k:][::-1]
+            top_features_per_row.append([self.feature_cols[idx] for idx in top_indices])
+            
+        return top_features_per_row
