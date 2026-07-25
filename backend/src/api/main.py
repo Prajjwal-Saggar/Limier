@@ -2,6 +2,7 @@
 FastAPI Server for Limier AML Hybrid Scorer.
 """
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import pandas as pd
@@ -54,6 +55,14 @@ app = FastAPI(
     description="Endpoint for generating hybrid Risk and Anomaly scores from raw transactions.",
     version="1.0.0",
     lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 class TransactionItem(BaseModel):
