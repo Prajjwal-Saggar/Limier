@@ -6,3 +6,4 @@ scikit-learn
 xgboost==1.7.6
 python-dotenv
 pydantic
+shap

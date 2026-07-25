@@ -61,5 +61,59 @@ This file serves as a temporary guide documenting the core machine learning, rul
 - Wraps `anomaly_detection_tool.py` and `risk_classification_tool.py` behind a fast, asynchronous `/score` POST endpoint.
 - Ingests raw JSON transactions, builds features, orchestrates the ML/rules, and returns a clean risk payload containing the final score, risk tier, triggered heuristic rules, and top SHAP features for the Agent to explain.
 
+## 7. Comprehensive Changelog (Maverick Updates)
+
+The following stack of changes reflects the complete architectural overhaul and implementation of the ML & Data layer, introduced in the recent development sprint:
+
+### 📊 Dataset & Generation (`backend/data/` & `generate_synthetic.py`)
+- **Massive Synthetic Data Generation**: Bootstrapped a highly realistic dataset of ~2,000 customers and >211,000 transactions.
+- **Behavioral Realism**: Engineered organic transaction patterns using log-normal amount distributions, Poisson timing processes, and repeat counterparty pools (80% stickiness).
+- **Typology Injection**: Embedded explicit AML typologies (Structuring, Rapid Cash-out, Round-trip Layering, High-Risk Geography) with strict ground truth labels (`is_planted_suspicious`).
+
+### 🛡️ Heuristics & Rules (`rules_engine.py` & `test_rules_engine.py`)
+- **Deterministic Rules Engine**: Implemented pure, isolated functions for key AML rules (Structuring, Velocity Spikes).
+- **Config-Driven**: Centralized thresholds in `RULES_CONFIG` for tunability without code changes.
+- **Explainable Outcomes**: Designed structured `RuleResult` outputs for immediate transparency.
+- **Testing**: Added comprehensive unit tests suite (`test_rules_engine.py`) to validate threshold triggers and edge cases.
+
+### 🧠 Feature Engineering (`feature_builder.py`)
+- **Vectorized Pipeline**: Developed high-performance feature extraction across Amount, Frequency, Velocity, and Directionality categories using Pandas rolling windows.
+- **Point-in-Time Integrity**: Guaranteed zero target leakage by ensuring all computed features strictly respect historical timestamps.
+- **Robustness Measures**: Added edge-case handling for missing history and division-by-zero protection.
+
+### 🤖 Machine Learning & Explainability (`ml_models.py`)
+- **Unsupervised Anomaly Detection**: Integrated Isolation Forest to detect generalized, zero-day anomalous behaviors in the dense feature space.
+- **Supervised Classification**: Deployed an XGBoost classifier trained dynamically on injected synthetic typologies to catch specific patterns.
+- **SHAP Explainable AI**: Injected `shap.TreeExplainer` directly into the ML pipeline, providing native, feature-level importance for every risk score.
+
+### ⚙️ Orchestration & Scoring (`hybrid_scorer.py`)
+- **Hybrid Brain**: Unified heuristic rules and ML outputs. Blends Isolation Forest and XGBoost (50/50) into a base risk score (0-100).
+- **Deterministic Overrides**: Allowed heuristic rule breaches to instantly elevate a profile to "High Risk", superseding ML uncertainty.
+- **Noise Reduction**: Applied pre-filtering to isolate material transactions and suppress micro-transaction noise.
+
+### 🔌 APIs & Agent Tools (`main.py`, `tools/`, `test_api.py`)
+- **FastAPI Endpoints**: Built and exposed an asynchronous `/score` POST endpoint for real-time risk inference.
+- **Agent Integration**: Wrapped ML models and rule engines in `anomaly_detection_tool.py` and `risk_classification_tool.py` for LLM orchestration.
+- **Rich Payloads**: Endpoint returns clean, structured risk payloads containing final scores, risk tiers, triggered rules, and SHAP-based explanations.
+- **API Testing**: Introduced `test_api.py` to ensure reliable endpoint contract execution.
+
+
+## 8. What's Next (Pending Tasks)
+
+The foundation is built, but the following tasks remain to fully realize the Limier AML vision:
+
+### 🧠 Agent Orchestration & Reasoning
+- **Core LLM Brain**: Integrate the existing agent tools (`anomaly_detection_tool`, `risk_classification_tool`) into a centralized LLM orchestrator (e.g., using LangGraph or Semantic Kernel).
+- **ReAct Loop Implementation**: Develop the core reasoning loop allowing the agent to autonomously fetch a transaction, run the `/score` endpoint, analyze SHAP values, and iteratively query historical data before making a decision.
+- **Automated SAR Generation**: Enable the agent to automatically draft comprehensive Suspicious Activity Reports (SARs) summarizing its investigation steps, rule triggers, and final justification.
+
+### 💻 Frontend Integration
+- **Dashboard Wiring**: Connect the Next.js/React frontend to the FastAPI endpoints to visualize live transaction flows and highlight risky entities.
+- **Explainability UI**: Build visual components to display the SHAP feature importances and rule flags returned by the backend, giving human investigators full transparency into the AI's logic.
+
+### 🔄 Human-in-the-Loop (Feedback Mechanism)
+- **Investigation Overrides**: Allow investigators to accept or reject the agent's findings through the UI.
+- **Model Retraining Pipeline**: Feed investigator decisions back into the dataset to continuously fine-tune the XGBoost model and reduce false positives over time.
+
 ---
 *Note: This is a temporary README created to track the architectural decisions made during the hackathon. It can be merged into the main backend README once the project solidifies.*

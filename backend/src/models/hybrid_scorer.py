@@ -56,7 +56,11 @@ def hybrid_score(
             reason = r.reason
             
         triggered.append({"rule": rule_name, "reason": reason})
-        top_features.append(reason)
+        top_features.append({
+            "feature": reason,
+            "value": 1.0,
+            "shap_contribution": None
+        })
         
     return {
         "final_score": float(final_score),
@@ -103,9 +107,20 @@ def score_all_customers(
         # Append SHAP features if available
         if cid in customer_shap_features and isinstance(customer_shap_features[cid], list):
             result["top_features"].extend(customer_shap_features[cid])
-            # Deduplicate features while preserving order
-            seen = set()
-            result["top_features"] = [f for f in result["top_features"] if not (f in seen or seen.add(f))]
+            
+        # Deduplicate features while preserving order
+        seen = set()
+        unique_features = []
+        for f in result["top_features"]:
+            f_name = f["feature"] if isinstance(f, dict) else str(f)
+            if f_name not in seen:
+                seen.add(f_name)
+                # Ensure it's a dict
+                if not isinstance(f, dict):
+                    f = {"feature": f, "value": 0.0, "shap_contribution": None}
+                unique_features.append(f)
+                
+        result["top_features"] = unique_features[:5]
             
         row = {"customer_id": cid}
         row.update(result)
