@@ -21,7 +21,6 @@ ENV/
 backend/data/*.csv
 backend/data/*.pkl
 backend/data/*.joblib
-backend/data/synthetic/*.csv
 
 # Jupyter
 .ipynb_checkpoints/
