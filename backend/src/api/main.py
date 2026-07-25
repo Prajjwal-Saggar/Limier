@@ -1,13 +1,21 @@
 """
 FastAPI Server for Limier AML Hybrid Scorer.
 """
+# pyrefly: ignore [missing-import]
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 import pandas as pd
 import uvicorn
 import logging
+import json
+import asyncio
 from contextlib import asynccontextmanager
+from fastapi.responses import StreamingResponse
+from dotenv import load_dotenv
+
+load_dotenv()
 
 from src.agent.tools.anomaly_detection_tool import detect_anomalies
 from src.agent.tools.risk_classification_tool import classify_risk
@@ -22,9 +30,17 @@ async def lifespan(app: FastAPI):
     import time
     start_t = time.time()
     
-    from src.data.generate_synthetic import generate_synthetic_data
-    # Generate data
-    txns, custs = generate_synthetic_data(n_customers=2000, days_of_history=180, seed=42)
+    import os
+    
+    data_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "data", "dataset"))
+    logger.info(f"Loading datasets from {data_dir}...")
+    
+    # Load data from CSV instead of generating
+    txns = pd.read_csv(os.path.join(data_dir, "transactions.csv"))
+    custs = pd.read_csv(os.path.join(data_dir, "customers.csv"))
+    
+    # Ensure datetimes are parsed correctly
+    txns["timestamp"] = pd.to_datetime(txns["timestamp"])
     
     # Pre-score
     features_df, _ = detect_anomalies(txns)
@@ -54,6 +70,14 @@ app = FastAPI(
     description="Endpoint for generating hybrid Risk and Anomaly scores from raw transactions.",
     version="1.0.0",
     lifespan=lifespan
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 class TransactionItem(BaseModel):
@@ -278,6 +302,58 @@ def score_transactions(request: ScoreRequest):
     except Exception as e:
         logger.error(f"Error during scoring: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/agent/query")
+async def agent_query(q: str):
+    async def event_stream():
+        # 1. Intent Detection
+        yield f"data: {json.dumps({'type': 'intent_detected', 'data': {'query': q}})}\n\n"
+        await asyncio.sleep(0.5)
+        
+        # 2. Search for high risk customer
+        yield f"data: {json.dumps({'type': 'tool_call', 'data': {'tool': 'get_high_risk_customer_profile', 'arguments': {}}})}\n\n"
+        await asyncio.sleep(0.5)
+        
+        risk_df = getattr(app.state, "risk_summary_df", None)
+        high_risk = None
+        if risk_df is not None and not risk_df.empty:
+            high_risk_df = risk_df[risk_df["risk_level"] == "high"]
+            if not high_risk_df.empty:
+                high_risk = high_risk_df.iloc[0].to_dict()
+                
+        if high_risk:
+            profile = {
+                "customer_id": str(high_risk["customer_id"]),
+                "risk_level": str(high_risk["risk_level"]),
+                "final_score": float(high_risk["final_score"]),
+                "ml_contribution": float(high_risk.get("ml_contribution", 0.0)),
+                "triggered_rules": high_risk.get("triggered_rules", []),
+                "top_features": high_risk.get("top_features", [])
+            }
+            
+            cust_id = profile["customer_id"]
+            
+            yield f"data: {json.dumps({'type': 'tool_result', 'data': {'tool': 'get_high_risk_customer_profile', 'result': f'Found customer {cust_id}'}})}\n\n"
+            await asyncio.sleep(0.5)
+            
+            # 3. Generate SAR
+            yield f"data: {json.dumps({'type': 'tool_call', 'data': {'tool': 'generate_sar', 'arguments': {'customer_id': cust_id}}})}\n\n"
+            
+            from src.agent.sar_generator import generate_sar
+            loop = asyncio.get_running_loop()
+            try:
+                # Run the blocking LLM call in a thread pool
+                sar_report = await loop.run_in_executor(None, generate_sar, profile)
+                yield f"data: {json.dumps({'type': 'tool_result', 'data': {'tool': 'generate_sar', 'result': 'SAR Generated Successfully'}})}\n\n"
+                
+                # 4. Final Answer
+                yield f"data: {json.dumps({'type': 'final_answer', 'data': {'text': sar_report, 'flagged_items': [profile]}})}\n\n"
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'data': {'message': f'LLM Generation Failed: {str(e)}'}})}\n\n"
+        else:
+            yield f"data: {json.dumps({'type': 'error', 'data': {'message': 'No high risk customers found to investigate.'}})}\n\n"
+            
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
 
 if __name__ == "__main__":
     uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)
