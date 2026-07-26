@@ -25,11 +25,11 @@ export function CustomerRiskDrawer({ customer, open, onOpenChange }: CustomerRis
           <div className="flex gap-4 text-sm mt-4 text-muted-foreground">
             <div>
               <span className="block text-xs uppercase tracking-wider mb-1">Final Score</span>
-              <span className="font-mono text-foreground text-lg">{customer.final_score.toFixed(2)}</span>
+              <span className="font-mono text-foreground text-lg">{typeof customer.final_score === 'number' ? customer.final_score.toFixed(2) : "N/A"}</span>
             </div>
             <div>
               <span className="block text-xs uppercase tracking-wider mb-1">ML Contrib</span>
-              <span className="font-mono text-foreground text-lg">{customer.ml_contribution.toFixed(2)}</span>
+              <span className="font-mono text-foreground text-lg">{typeof customer.ml_contribution === 'number' ? customer.ml_contribution.toFixed(2) : "N/A"}</span>
             </div>
           </div>
         </SheetHeader>
