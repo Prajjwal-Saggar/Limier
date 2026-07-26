@@ -9,3 +9,8 @@ pydantic
 shap
 openai
 httpx
+optuna
+mlflow
+joblib
+pytest
+

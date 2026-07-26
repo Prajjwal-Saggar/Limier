@@ -6,15 +6,16 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
  * Connects to the SSE endpoint and yields parsed AgentEvent objects.
  * Handles the native chunking from fetch/ReadableStream.
  */
-export async function* streamAgentQuery(query: string): AsyncGenerator<AgentEvent, void, unknown> {
-  const encodedQuery = encodeURIComponent(query);
-  const url = `${API_BASE_URL}/api/agent/query?q=${encodedQuery}`;
+export async function* streamAgentQuery(messages: {role: string, content: string}[]): AsyncGenerator<AgentEvent, void, unknown> {
+  const url = `${API_BASE_URL}/api/agent/query`;
 
   const response = await fetch(url, {
-    method: "GET",
+    method: "POST",
     headers: {
+      "Content-Type": "application/json",
       Accept: "text/event-stream",
     },
+    body: JSON.stringify({ messages }),
   });
 
   if (!response.ok) {

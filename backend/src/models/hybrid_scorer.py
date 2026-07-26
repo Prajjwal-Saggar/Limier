@@ -3,31 +3,43 @@ Hybrid scorer combining deterministic rules with ML anomaly scores.
 """
 from __future__ import annotations
 
+import os
 import pandas as pd
 
-HYBRID_CONFIG = {
-    "high_threshold": 70.0,
-    "medium_threshold": 40.0,
-    "ml_weight": 0.5,
-    "xgb_weight": 0.5
-}
+def _get_hybrid_config() -> dict:
+    """Reads threshold config from env vars, falls back to sensible defaults."""
+    return {
+        "high_threshold": float(os.environ.get("AML_HIGH_THRESHOLD", "70.0")),
+        "medium_threshold": float(os.environ.get("AML_MEDIUM_THRESHOLD", "40.0")),
+        # Legacy heuristic weights — only used if MetaEnsemble is not fitted
+        "ml_weight": 0.2,
+        "xgb_weight": 0.8,
+    }
+
+HYBRID_CONFIG = _get_hybrid_config()
 
 def hybrid_score(
     rule_results: list,
     iso_forest_score: float,
     xgb_score: float | None = None,
-    config: dict = HYBRID_CONFIG
+    ensemble_score: float | None = None,  # Calibrated MetaEnsemble P(fraud) — preferred
+    config: dict | None = None
 ) -> dict:
     """
     Returns a unified risk classification and score.
+    Prefer ensemble_score (calibrated) over raw heuristic combination.
     """
+    if config is None:
+        config = _get_hybrid_config()
+
     # 1. Deterministic Rule Override
-    # Rules act as a guaranteed safety net (if a known hard typology matches, we don't 
-    # want the ML model's nuance to accidentally downgrade it).
     high_rule_fired = any(getattr(r, "severity", r.get("severity") if isinstance(r, dict) else "") == "high" for r in rule_results)
-    
+
     # 2. Base Score Calculation (0-100)
-    if xgb_score is not None:
+    # Use calibrated MetaEnsemble score if available, else fall back to heuristic
+    if ensemble_score is not None:
+        final_score = float(ensemble_score) * 100.0
+    elif xgb_score is not None:
         final_score = (iso_forest_score * config["ml_weight"] + xgb_score * config["xgb_weight"]) * 100.0
     else:
         final_score = iso_forest_score * 100.0
@@ -84,7 +96,12 @@ def score_all_customers(
     
     if "iso_forest_score" in features_df.columns:
         customer_ml_scores = features_df.groupby("customer_id")["iso_forest_score"].max()
-        
+
+    if "ensemble_score" in features_df.columns:
+        customer_ensemble_scores = features_df.groupby("customer_id")["ensemble_score"].max()
+    else:
+        customer_ensemble_scores = pd.Series(dtype=float)
+
     if "xgb_score" in features_df.columns:
         customer_xgb_scores = features_df.groupby("customer_id")["xgb_score"].max()
         
@@ -101,8 +118,9 @@ def score_all_customers(
         rule_res = rule_results_by_customer.get(cid, [])
         iso_score = float(customer_ml_scores.get(cid, 0.0))
         xgb_score = float(customer_xgb_scores.get(cid, 0.0)) if cid in customer_xgb_scores else None
-        
-        result = hybrid_score(rule_res, iso_score, xgb_score)
+        ens_score = float(customer_ensemble_scores.get(cid, 0.0)) if cid in customer_ensemble_scores else None
+
+        result = hybrid_score(rule_res, iso_score, xgb_score, ensemble_score=ens_score)
         
         # Append SHAP features if available
         if cid in customer_shap_features and isinstance(customer_shap_features[cid], list):

@@ -91,6 +91,21 @@ def build_features(transactions_df: pd.DataFrame, customer_id: str | None = None
     total_txns_7d = grp.rolling(FEATURE_CONFIG["window_7d"], on="timestamp")["amount"].count().reset_index(drop=True)
     df["ratio_subthreshold_to_total_txns"] = (df["count_subthreshold_txns_7d"] / total_txns_7d.replace(0, 1)).fillna(0.0)
 
+    # Structuring proximity: score peaks at $9,999 (just under CTR threshold), zero outside [$8k,$10k)
+    # Formula: (amount - 8000) / 2000 clamped to [0,1]; at $9,800 → 0.90, at $8,000 → 0.0
+    in_structuring_zone = (df["amount"] >= 8000) & (df["amount"] < 10000)
+    df["structuring_proximity"] = ((df["amount"] - 8000) / 2000.0).clip(0, 1).where(in_structuring_zone, 0.0)
+
+    # Round number bias (continuous, tiered): $5,000 → 1.0, $4,500 → 0.4, $4,800 → 0.2, $4,873.22 → 0.0
+    df["round_number_bias"] = (
+        (df["amount"] % 1000 == 0).astype(float) * 0.6 +
+        (df["amount"] % 500 == 0).astype(float) * 0.2 +
+        (df["amount"] % 100 == 0).astype(float) * 0.2
+    )
+
+    # Cross-border flag: 1 if counterparty is outside US, 0 otherwise
+    df["cross_border_flag"] = (df["counterparty_country"] != "US").astype(float)
+
     # ----------------------------------------------------------------------- #
     # CATEGORY B — Frequency & velocity features
     # ----------------------------------------------------------------------- #
@@ -124,6 +139,27 @@ def build_features(transactions_df: pd.DataFrame, customer_id: str | None = None
     # just because they lack trailing history for the denominator.
     # We preserve the 0.1 replacement *only* for established but inactive customers.
     df["spike_ratio"] = (df["txn_count_7d"] / trailing_avg_weekly.replace(0, 0.1)).where(has_enough_history, np.nan)
+
+    # Time-of-day & Day-of-week deviation
+    df["hour_of_day"] = df["timestamp"].dt.hour
+    df["day_of_week"] = df["timestamp"].dt.dayofweek
+    
+    cust_hour_mean = grp["hour_of_day"].transform("mean")
+    cust_hour_std = grp["hour_of_day"].transform("std").fillna(1.0).replace(0, 1.0)
+    df["hour_deviation"] = ((df["hour_of_day"] - cust_hour_mean) / cust_hour_std).abs()
+    
+    cust_dow_mean = grp["day_of_week"].transform("mean")
+    cust_dow_std = grp["day_of_week"].transform("std").fillna(1.0).replace(0, 1.0)
+    df["dow_deviation"] = ((df["day_of_week"] - cust_dow_mean) / cust_dow_std).abs()
+    
+    # Counterparty Frequency (cumulative count per customer-counterparty pair)
+    df["cp_freq"] = df.groupby(["customer_id", "counterparty_id"]).cumcount()
+
+    # New counterparty ratio: % of transactions in last 30d that are with a brand-new counterparty
+    # cp_freq == 0 means this is the FIRST EVER transaction with this counterparty
+    df["is_new_cp"] = (df["cp_freq"] == 0).astype(float)
+    new_cp_30d = grp.rolling(FEATURE_CONFIG["window_30d"], on="timestamp")["is_new_cp"].sum().reset_index(drop=True)
+    df["new_counterparty_ratio"] = (new_cp_30d / df["txn_count_30d"].replace(0, 1)).fillna(0.0).clip(0, 1)
 
     # ----------------------------------------------------------------------- #
     # CATEGORY C — Cash-flow & directionality features
@@ -174,10 +210,12 @@ def build_features(transactions_df: pd.DataFrame, customer_id: str | None = None
         # Category A
         "log_amount", "amount_rounded_to_nearest_100", "distance_from_ctr_threshold",
         "count_subthreshold_txns_7d", "sum_subthreshold_txns_24h", "ratio_subthreshold_to_total_txns",
+        "structuring_proximity", "round_number_bias", "cross_border_flag",
         
         # Category B
         "txn_count_1d", "txn_count_7d", "txn_count_30d", "txn_velocity",
         "days_since_last_txn", "spike_ratio", "burstiness",
+        "hour_deviation", "dow_deviation", "cp_freq", "new_counterparty_ratio",
         
         # Category C
         "rolling_inflow_sum_7d", "rolling_inflow_sum_30d",

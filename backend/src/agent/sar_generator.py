@@ -70,17 +70,36 @@ def generate_sar(customer_profile: Dict[str, Any]) -> str:
     
     # Construct the context payload
     cust_id = customer_profile.get("customer_id")
-    risk_level = customer_profile.get("risk_level")
+    risk_level = customer_profile.get("risk_level", "low").upper()
     ml_score = customer_profile.get("ml_contribution")
     rules = json.dumps(customer_profile.get("triggered_rules", []), indent=2)
     shap_features = json.dumps(customer_profile.get("top_features", []), indent=2)
     
+    if risk_level == "HIGH":
+        report_type = "formal Suspicious Activity Report (SAR)"
+        instructions = """
+1. Write a professional, concise 3-paragraph SAR.
+2. Paragraph 1: Executive Summary (Customer ID, risk level, and primary reason for the report).
+3. Paragraph 2: Deterministic Evidence (Explain the hard rules that were triggered in plain English).
+4. Paragraph 3: Machine Learning Nuance (Explain the SHAP features. For example, if 'spike_ratio_has_history' or 'amount_rounded' is highly anomalous, explain why that is mathematically suspicious).
+5. Do not invent new transactions or data. Rely ONLY on the provided context.
+"""
+    else:
+        report_type = f"Risk Assessment Report (Risk Level: {risk_level})"
+        instructions = """
+1. Write a professional, concise 3-paragraph Risk Assessment.
+2. Paragraph 1: Executive Summary (Customer ID, risk level, and general overview).
+3. Paragraph 2: Deterministic Findings (Explain why no severe rules were triggered or what minor rules were found).
+4. Paragraph 3: Machine Learning Context (Explain that the ML model features like SHAP values are generally normal or negligible, indicating low/medium risk).
+5. Conclude that this customer does not currently warrant a Suspicious Activity Report. Do not invent new data.
+"""
+
     prompt = f"""
-You need to write a formal Suspicious Activity Report (SAR) for a customer that has been flagged by the Limier AI system.
+You need to write a {report_type} for a customer evaluated by the Limier AI system.
 
 Here is the raw data from the ML and Rules engines:
 - Customer ID: {cust_id}
-- Overall Risk Level: {risk_level.upper()}
+- Overall Risk Level: {risk_level}
 - Isolation Forest Anomaly Score (0-1): {ml_score}
 
 Deterministic Rules Triggered:
@@ -90,11 +109,7 @@ Top XGBoost ML Features (SHAP Values):
 {shap_features}
 
 Instructions:
-1. Write a professional, concise 3-paragraph SAR.
-2. Paragraph 1: Executive Summary (Customer ID, risk level, and primary reason for the report).
-3. Paragraph 2: Deterministic Evidence (Explain the hard rules that were triggered in plain English).
-4. Paragraph 3: Machine Learning Nuance (Explain the SHAP features. For example, if 'spike_ratio_has_history' or 'amount_rounded' is highly anomalous, explain why that is mathematically suspicious).
-5. Do not invent new transactions or data. Rely ONLY on the provided context.
+{instructions}
 """
     
     response = client.chat.completions.create(

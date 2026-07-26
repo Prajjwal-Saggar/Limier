@@ -43,13 +43,14 @@ async def lifespan(app: FastAPI):
     txns["timestamp"] = pd.to_datetime(txns["timestamp"])
     
     # Pre-score
-    features_df, _ = detect_anomalies(txns)
+    features_df, iso_scorer, xgb_scorer, meta_ensemble = detect_anomalies(txns)
     risk_summary_df = classify_risk(txns, features_df)
     
     # Cache to app.state
     app.state.transactions_df = txns
     app.state.customers_df = custs
     app.state.risk_summary_df = risk_summary_df
+    app.state.meta_ensemble = meta_ensemble
     
     # Pre-compute dict for O(1) reads
     app.state.risk_by_customer = risk_summary_df.set_index("customer_id").to_dict("index")
@@ -272,7 +273,7 @@ def score_transactions(request: ScoreRequest):
         pattern_focus = request.filters.pattern_focus if request.filters else None
         
         # 1. Run through Anomaly Detection Tool (Computes Features + ML Score)
-        features_df, _ = detect_anomalies(df)
+        features_df, iso_scorer, xgb_scorer, meta_ensemble = detect_anomalies(df)
         
         if features_df.empty:
             return []
@@ -303,57 +304,17 @@ def score_transactions(request: ScoreRequest):
         logger.error(f"Error during scoring: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/agent/query")
-async def agent_query(q: str):
-    async def event_stream():
-        # 1. Intent Detection
-        yield f"data: {json.dumps({'type': 'intent_detected', 'data': {'query': q}})}\n\n"
-        await asyncio.sleep(0.5)
-        
-        # 2. Search for high risk customer
-        yield f"data: {json.dumps({'type': 'tool_call', 'data': {'tool': 'get_high_risk_customer_profile', 'arguments': {}}})}\n\n"
-        await asyncio.sleep(0.5)
-        
-        risk_df = getattr(app.state, "risk_summary_df", None)
-        high_risk = None
-        if risk_df is not None and not risk_df.empty:
-            high_risk_df = risk_df[risk_df["risk_level"] == "high"]
-            if not high_risk_df.empty:
-                high_risk = high_risk_df.iloc[0].to_dict()
-                
-        if high_risk:
-            profile = {
-                "customer_id": str(high_risk["customer_id"]),
-                "risk_level": str(high_risk["risk_level"]),
-                "final_score": float(high_risk["final_score"]),
-                "ml_contribution": float(high_risk.get("ml_contribution", 0.0)),
-                "triggered_rules": high_risk.get("triggered_rules", []),
-                "top_features": high_risk.get("top_features", [])
-            }
-            
-            cust_id = profile["customer_id"]
-            
-            yield f"data: {json.dumps({'type': 'tool_result', 'data': {'tool': 'get_high_risk_customer_profile', 'result': f'Found customer {cust_id}'}})}\n\n"
-            await asyncio.sleep(0.5)
-            
-            # 3. Generate SAR
-            yield f"data: {json.dumps({'type': 'tool_call', 'data': {'tool': 'generate_sar', 'arguments': {'customer_id': cust_id}}})}\n\n"
-            
-            from src.agent.sar_generator import generate_sar
-            loop = asyncio.get_running_loop()
-            try:
-                # Run the blocking LLM call in a thread pool
-                sar_report = await loop.run_in_executor(None, generate_sar, profile)
-                yield f"data: {json.dumps({'type': 'tool_result', 'data': {'tool': 'generate_sar', 'result': 'SAR Generated Successfully'}})}\n\n"
-                
-                # 4. Final Answer
-                yield f"data: {json.dumps({'type': 'final_answer', 'data': {'text': sar_report, 'flagged_items': [profile]}})}\n\n"
-            except Exception as e:
-                yield f"data: {json.dumps({'type': 'error', 'data': {'message': f'LLM Generation Failed: {str(e)}'}})}\n\n"
-        else:
-            yield f"data: {json.dumps({'type': 'error', 'data': {'message': 'No high risk customers found to investigate.'}})}\n\n"
-            
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+class MessageItem(BaseModel):
+    role: str
+    content: str
+
+class AgentQueryRequest(BaseModel):
+    messages: List[MessageItem]
+
+@app.post("/api/agent/query")
+async def agent_query(request: AgentQueryRequest):
+    from src.agent.query_agent import run_agent_query
+    return StreamingResponse(run_agent_query(request.messages, app.state), media_type="text/event-stream")
 
 if __name__ == "__main__":
     uvicorn.run("src.api.main:app", host="0.0.0.0", port=8000, reload=True)

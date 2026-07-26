@@ -1,4 +1,5 @@
 @import "tailwindcss";
+@plugin "@tailwindcss/typography";
 
 /* 
  * Local-only trial font files, not licensed for production/public deployment. 

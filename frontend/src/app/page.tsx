@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { fetchEda } from "@/lib/api";
 import { streamAgentQuery } from "@/lib/streamClient";
 import { EdaResponse, AgentEvent, ScoreResponse } from "@/lib/types";
@@ -13,22 +13,22 @@ import { EdaOverview } from "@/components/EdaOverview";
 import { CustomerRiskDrawer } from "@/components/CustomerRiskDrawer";
 import { Skeleton } from "@/components/ui/skeleton";
 import { StatBar } from "@/components/StatBar";
-import { Users, Activity, Globe, ShieldAlert } from "lucide-react";
+import { ArchPillars } from "@/components/ArchPillars";
+import { Users, Activity, Globe, ShieldAlert, Loader2 } from "lucide-react";
 import { motion } from "framer-motion";
 
 export default function Home() {
   const [edaData, setEdaData] = useState<EdaResponse | null>(null);
   const [edaLoading, setEdaLoading] = useState(true);
 
-  // Agent State
   const [messages, setMessages] = useState<ChatMessageData[]>([]);
   const [traceEvents, setTraceEvents] = useState<AgentEvent[]>([]);
   const [isAgentLoading, setIsAgentLoading] = useState(false);
-  
-  // Results State
   const [flaggedItems, setFlaggedItems] = useState<ScoreResponse[]>([]);
   const [selectedCustomer, setSelectedCustomer] = useState<ScoreResponse | null>(null);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const dashboardRef = useRef<HTMLDivElement>(null);
+  const [lastQuery, setLastQuery] = useState<string>("");
 
   useEffect(() => {
     async function loadEda() {
@@ -45,11 +45,11 @@ export default function Home() {
   }, []);
 
   const handleAgentQuery = async (query: string) => {
-    // Add user message
     const userMsg: ChatMessageData = { id: Date.now().toString(), role: "user", text: query };
     setMessages(prev => [...prev, userMsg]);
     setIsAgentLoading(true);
     setTraceEvents([]);
+    setLastQuery(query);
     
     // Create placeholder agent message that shows typing indicator
     const agentMsgId = (Date.now() + 1).toString();
@@ -57,7 +57,11 @@ export default function Home() {
 
     try {
       // Consume SSE stream
-      for await (const event of streamAgentQuery(query)) {
+      const history = [...messages, userMsg].map(m => ({
+        role: m.role === "agent" ? "assistant" : "user",
+        content: m.text
+      }));
+      for await (const event of streamAgentQuery(history)) {
         setTraceEvents(prev => [...prev, event]);
         
         if (event.type === "final_answer") {
@@ -74,11 +78,23 @@ export default function Home() {
         }
         
         if (event.type === "error") {
-          setMessages(prev => prev.map(m => m.id === agentMsgId ? { id: agentMsgId, role: "agent", text: `**Error:** ${event.data.message}`, isStreaming: false } : m));
+          const errMsg = event.data?.message || "Unknown error";
+          const isRateLimit = errMsg.includes("429") || errMsg.toLowerCase().includes("rate_limit") || errMsg.toLowerCase().includes("rate limit");
+          setMessages(prev => prev.map(m =>
+            m.id === agentMsgId
+              ? { id: agentMsgId, role: "agent", text: errMsg, isStreaming: false, isError: true, isRateLimit }
+              : m
+          ));
         }
       }
     } catch (e: any) {
-      setMessages(prev => prev.map(m => m.id === agentMsgId ? { id: agentMsgId, role: "agent", text: `**Error:** Failed to reach agent API. (${e.message})`, isStreaming: false } : m));
+      const errMsg = e.message || "Unknown error";
+      const isRateLimit = errMsg.includes("429") || errMsg.toLowerCase().includes("rate_limit") || errMsg.toLowerCase().includes("rate limit");
+      setMessages(prev => prev.map(m =>
+        m.id === agentMsgId
+          ? { id: agentMsgId, role: "agent", text: errMsg, isStreaming: false, isError: true, isRateLimit }
+          : m
+      ));
     } finally {
       setIsAgentLoading(false);
     }
@@ -89,30 +105,28 @@ export default function Home() {
     setIsDrawerOpen(true);
   };
 
-  return (
-    <div className="max-w-7xl mx-auto px-6 py-8">
-      
-      {/* Hero Section */}
-      <section className="mb-12">
-        <motion.div 
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
-          className="mb-8"
-        >
-          <h1 className="text-4xl md:text-5xl lg:text-6xl tracking-tight text-foreground mb-4">
-            AI-Powered <br/>
-            <span className="text-transparent bg-clip-text bg-gradient-to-r from-primary to-emerald-400">
-              AML Investigation
-            </span>
-          </h1>
-          <p className="text-muted-foreground max-w-2xl text-lg">
-            Natural language interrogation of massive transaction graphs. Uncover structuring, round-tripping, and hidden compliance risks instantly.
-          </p>
-        </motion.div>
+  // Demo CTA: pre-seeds the investigation with a default query and scrolls to the console
+  const handleRunDemo = useCallback(() => {
+    dashboardRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    setTimeout(() => {
+      handleAgentQuery("Show me the top 5 most suspicious customers and generate a SAR for the highest risk one.");
+    }, 600);
+  }, [handleAgentQuery]);
 
-        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {edaLoading ? (
+  return (
+    <div>
+      {/* Landing Section (Item 7) */}
+      <div className="max-w-7xl mx-auto">
+        <ArchPillars onRunDemo={handleRunDemo} />
+      </div>
+
+      {/* Dashboard */}
+      <div id="dashboard" ref={dashboardRef} className="max-w-7xl mx-auto px-6 py-8">
+
+        {/* Hero Stat Cards — now inside dashboard section, not the landing hero */}
+        <section className="mb-12">
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            {edaLoading ? (
             Array(4).fill(0).map((_, i) => <Skeleton key={i} className="h-[120px] rounded-xl" />)
           ) : edaData ? (
             <>
@@ -140,7 +154,7 @@ export default function Home() {
                   low={edaData.risk_level_breakdown.low}
                   medium={edaData.risk_level_breakdown.medium}
                   high={edaData.risk_level_breakdown.high}
-                  className="h-3 mt-1 w-[80%]"
+                  className="h-6 mt-1 w-[80%]"
                 />} 
                 subtitle={
                   <div className="flex gap-3 text-xs mt-1 font-mono">
@@ -171,7 +185,7 @@ export default function Home() {
         </div>
         
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 h-[600px]">
-          <ChatPanel messages={messages} onSubmit={handleAgentQuery} isLoading={isAgentLoading} />
+          <ChatPanel messages={messages} onSubmit={handleAgentQuery} isLoading={isAgentLoading} lastQuery={lastQuery} />
           
           <div className="bg-black/20 rounded-xl border border-white/5 backdrop-blur-md overflow-hidden flex flex-col">
             <div className="px-6 py-4 border-b border-white/5 bg-white/5 flex items-center justify-between">
@@ -187,33 +201,56 @@ export default function Home() {
       {/* Results Table */}
       <section id="results-table" className="mb-16 scroll-mt-24">
         <h2 className="text-2xl font-display font-medium mb-6">Flagged Entities</h2>
-        <RiskTable data={flaggedItems} onViewDetails={handleViewCustomer} />
+        {flaggedItems.length > 0 ? (
+          <RiskTable data={flaggedItems} onViewDetails={handleViewCustomer} />
+        ) : isAgentLoading ? (
+          <div className="flex flex-col space-y-3">
+            <Skeleton className="h-16 w-full rounded-xl" />
+            <Skeleton className="h-16 w-full rounded-xl" />
+            <Skeleton className="h-16 w-full rounded-xl" />
+          </div>
+        ) : (
+          <div className="p-12 text-center text-muted-foreground border border-white/5 rounded-xl bg-black/20 backdrop-blur-md">
+            No entities flagged yet. Run an investigation to see results.
+          </div>
+        )}
       </section>
 
       {/* EDA Section */}
       <section className="mb-8">
-        <h2 className="text-2xl font-display font-medium mb-2">Dataset Overview</h2>
-        <p className="text-muted-foreground mb-6">Global patterns across the synthetic portfolio.</p>
-        
+        <motion.div
+          initial={{ opacity: 0, y: 16 }}
+          whileInView={{ opacity: 1, y: 0 }}
+          viewport={{ once: true }}
+          transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+        >
+          <h2 className="text-2xl font-display font-medium mb-2">Dataset Overview</h2>
+          <p className="text-muted-foreground mb-6">Global patterns across the synthetic portfolio.</p>
+        </motion.div>
+
         {edaLoading ? (
           <div className="h-64 rounded-xl border border-white/5 bg-black/20 backdrop-blur-md flex items-center justify-center">
             <Loader2 className="w-8 h-8 animate-spin text-muted-foreground" />
           </div>
         ) : (
-          <EdaOverview data={edaData} />
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            whileInView={{ opacity: 1, y: 0 }}
+            viewport={{ once: true }}
+            transition={{ duration: 0.5, delay: 0.1, ease: [0.16, 1, 0.3, 1] }}
+          >
+            <EdaOverview data={edaData} />
+          </motion.div>
         )}
       </section>
 
       {/* Drawer */}
-      <CustomerRiskDrawer 
-        open={isDrawerOpen} 
-        onOpenChange={setIsDrawerOpen} 
-        customer={selectedCustomer} 
+      <CustomerRiskDrawer
+        open={isDrawerOpen}
+        onOpenChange={setIsDrawerOpen}
+        customer={selectedCustomer}
       />
-
+      </div>
     </div>
   );
 }
-
-// Inline Loader2 since it wasn't imported from lucide-react in this file but used above
-import { Loader2 } from "lucide-react";
